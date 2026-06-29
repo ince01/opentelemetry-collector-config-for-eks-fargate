@@ -1,0 +1,620 @@
+# OpenTelemetry Collector Helm Chart: https://github.com/open-telemetry/opentelemetry-helm-charts/blob/main/charts/opentelemetry-collector/values.schema.json
+
+mode: deployment
+
+clusterRole:
+  create: true
+  rules:
+    # cAdvisor metrics scraping via API server proxy
+    - apiGroups: [""]
+      resources: ["nodes/proxy", "nodes/metrics"]
+      verbs: ["get", "list"]
+    - nonResourceURLs: ["/metrics/cadvisor", "/metrics"]
+      verbs: ["get"]
+
+    # k8s_attributes processor — pod/workload metadata lookup
+    - apiGroups: [""]
+      resources: ["nodes", "namespaces", "pods"]
+      verbs: ["get", "list", "watch"]
+    - apiGroups: ["apps"]
+      resources: ["replicasets", "deployments", "daemonsets", "statefulsets"]
+      verbs: ["get", "list", "watch"]
+    - apiGroups: ["batch"]
+      resources: ["jobs", "cronjobs"]
+      verbs: ["get", "list", "watch"]
+
+replicaCount: 1
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 1536Mi
+  limits:
+    cpu: 500m
+    memory: 1536Mi
+
+ports:
+  otlp-http:
+    enabled: true
+    containerPort: 4318
+    servicePort: 4318
+    protocol: TCP
+  health:
+    enabled: true
+    containerPort: 13133
+    servicePort: 13133
+    protocol: TCP
+
+# Ingress disabled — traffic to the collector is routed via the Gateway API
+# HTTPRoute in k8s/infra/otel-collector/http-route-production.yaml.
+ingress:
+  enabled: false
+
+presets:
+  clusterMetrics:
+    enabled: true
+  kubeletMetrics:
+    enabled: false
+  kubernetesEvents:
+    enabled: true
+  kubernetesAttributes:
+    enabled: false
+
+image:
+  repository: otel/opentelemetry-collector-contrib
+  tag: "0.150.1"
+  pullPolicy: IfNotPresent
+
+extraEnvs:
+  - name: GRAFANA_CLOUD_USERNAME
+    valueFrom:
+      secretKeyRef:
+        name: grafana-cloud-auth
+        key: username
+  - name: GRAFANA_CLOUD_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: grafana-cloud-auth
+        key: password
+  - name: GRAFANA_CLOUD_BASIC_AUTH
+    valueFrom:
+      secretKeyRef:
+        name: grafana-cloud-auth
+        key: basic_auth
+
+  - name: GRAFANA_CLOUD_BACKUP_USERNAME
+    valueFrom:
+      secretKeyRef:
+        name: grafana-cloud-backup-auth
+        key: username
+  - name: GRAFANA_CLOUD_BACKUP_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: grafana-cloud-backup-auth
+        key: password
+  - name: GRAFANA_CLOUD_BACKUP_BASIC_AUTH
+    valueFrom:
+      secretKeyRef:
+        name: grafana-cloud-backup-auth
+        key: basic_auth
+
+  - name: MYSQL_ENDPOINT
+    valueFrom:
+      secretKeyRef:
+        name: mysql-credentials
+        key: endpoint
+  - name: MYSQL_USERNAME
+    valueFrom:
+      secretKeyRef:
+        name: mysql-credentials
+        key: username
+  - name: MYSQL_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: mysql-credentials
+        key: password
+  - name: MYSQL_DATABASE
+    valueFrom:
+      secretKeyRef:
+        name: mysql-credentials
+        key: database
+
+config:
+  extensions:
+    basicauth/grafana_cloud:
+      client_auth:
+        username: "${env:GRAFANA_CLOUD_USERNAME}"
+        password: "${env:GRAFANA_CLOUD_PASSWORD}"
+
+    basicauth/grafana_cloud_backup:
+      client_auth:
+        username: "${env:GRAFANA_CLOUD_BACKUP_USERNAME}"
+        password: "${env:GRAFANA_CLOUD_BACKUP_PASSWORD}"
+
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+          cors:
+            allowed_origins:
+              - https://app.1min.ai
+
+    k8s_cluster:
+      collection_interval: 60s
+      metadata_collection_interval: 5m
+      resource_attributes:
+        k8s.hpa.scaletargetref.name:
+          enabled: true
+        k8s.hpa.scaletargetref.kind:
+          enabled: true
+
+    mysql:
+      endpoint: "${env:MYSQL_ENDPOINT}"
+      username: "${env:MYSQL_USERNAME}"
+      password: "${env:MYSQL_PASSWORD}"
+      database: "${env:MYSQL_DATABASE}"
+      collection_interval: 60s
+      initial_delay: 1s
+      statement_events:
+        digest_text_limit: 120
+        time_limit: 24h
+        limit: 250
+      metrics:
+        mysql.commands:
+          enabled: true
+        mysql.client.network.io:
+          enabled: true
+        mysql.connection.count:
+          enabled: true
+        mysql.max_used_connections:
+          enabled: true
+        mysql.connection.errors:
+          enabled: true
+        mysql.query.client.count:
+          enabled: true
+        mysql.query.count:
+          enabled: true
+        mysql.query.slow.count:
+          enabled: true
+
+    prometheus:
+      config:
+        scrape_configs:
+          - job_name: kubelet-cadvisor
+            scrape_interval: 60s
+            scrape_timeout: 30s
+            scheme: https
+            kubernetes_sd_configs:
+              - role: node
+            bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+            tls_config:
+              ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+            relabel_configs:
+              - action: labelmap
+                regex: __meta_kubernetes_node_label_(.+)
+              - target_label: __address__
+                replacement: kubernetes.default.svc:443
+              - source_labels: [__meta_kubernetes_node_name]
+                regex: (.+)
+                target_label: __metrics_path__
+                replacement: /api/v1/nodes/$${1}/proxy/metrics/cadvisor
+
+    nop:
+
+  processors:
+    batch:
+      timeout: 5s
+      send_batch_size: 500
+      send_batch_max_size: 1000
+
+    tail_sampling:
+      decision_wait: 30s
+
+      policies:
+        # Priority 1: Always keep errors
+        - name: errors
+          type: status_code
+          status_code:
+            status_codes: [ERROR]
+
+        # Priority 2: Performance issues
+        - name: slow_traces
+          type: latency
+          latency:
+            threshold_ms: 1000
+
+        # Priority 3: Sample baseline traffic with 25%
+        - name: baseline
+          type: probabilistic
+          probabilistic:
+            sampling_percentage: 25.0
+
+    resource/add_cluster:
+      attributes:
+        - key: k8s.cluster.name
+          value: prod-eks
+          action: upsert
+
+    k8s_attributes:
+      extract:
+        metadata:
+          - k8s.namespace.name
+          - k8s.pod.name
+          - k8s.pod.uid
+          - k8s.node.name
+          - k8s.pod.start_time
+          - k8s.deployment.name
+          - k8s.replicaset.name
+          - k8s.replicaset.uid
+          - k8s.daemonset.name
+          - k8s.daemonset.uid
+          - k8s.job.name
+          - k8s.job.uid
+          - k8s.container.name
+          - k8s.cronjob.name
+          - k8s.statefulset.name
+          - k8s.statefulset.uid
+          - container.image.tag
+          - container.image.name
+          - service.namespace
+          - service.name
+          - service.version
+        otel_annotations: true
+      passthrough: false
+      pod_association:
+        - sources:
+            - from: resource_attribute
+              name: k8s.pod.ip
+        - sources:
+            - from: resource_attribute
+              name: k8s.pod.uid
+        - sources:
+            - from: connection
+
+    transform/cadvisor:
+      error_mode: ignore
+      metric_statements:
+        - context: metric
+          statements:
+            # CPU
+            - set(metric.name, "k8s.container.cpu.time") where metric.name == "container_cpu_usage_seconds_total"
+            - set(metric.name, "k8s.container.cpu.periods") where metric.name == "container_cpu_cfs_periods_total"
+            - set(metric.name, "k8s.container.cpu.throttled_time") where metric.name == "container_cpu_cfs_throttled_seconds_total"
+            - set(metric.name, "k8s.container.cpu.throttled_periods") where metric.name == "container_cpu_cfs_throttled_periods_total"
+            # Memory
+            - set(metric.name, "k8s.container.memory.usage") where metric.name == "container_memory_usage_bytes"
+            - set(metric.name, "k8s.container.memory.working_set") where metric.name == "container_memory_working_set_bytes"
+            - set(metric.name, "k8s.container.memory.page_faults") where metric.name == "container_memory_failures_total"
+            # Filesystem
+            - set(metric.name, "k8s.container.fs.usage") where metric.name == "container_fs_usage_bytes"
+            - set(metric.name, "k8s.container.fs.read") where metric.name == "container_fs_reads_bytes_total"
+            - set(metric.name, "k8s.container.fs.write") where metric.name == "container_fs_writes_bytes_total"
+            # Network
+            - set(metric.name, "k8s.container.network.receive") where metric.name == "container_network_receive_bytes_total"
+            - set(metric.name, "k8s.container.network.transmit") where metric.name == "container_network_transmit_bytes_total"
+            - set(metric.name, "k8s.container.network.receive.errors") where metric.name == "container_network_receive_errors_total"
+            - set(metric.name, "k8s.container.network.transmit.errors") where metric.name == "container_network_transmit_errors_total"
+
+        - context: datapoint
+          statements:
+            # Map to OTel semantic convention attributes
+            # k8s.namespace.name and k8s.node.name come from cadvisor labels
+            - set(datapoint.attributes["k8s.namespace.name"], datapoint.attributes["namespace"]) where datapoint.attributes["namespace"] != nil
+            - set(datapoint.attributes["k8s.node.name"], datapoint.attributes["kubernetes_io_hostname"]) where datapoint.attributes["kubernetes_io_hostname"] != nil
+
+            # Extract pod UID and container ID from cgroup id path — id is the source of truth.
+            # Supports all QoS classes:
+            #   Guaranteed:  /kubepods/pod<uid>/<container-id>
+            #   Burstable:   /kubepods/burstable/pod<uid>/<container-id>
+            #   BestEffort:  /kubepods/besteffort/pod<uid>/<container-id>
+            # replace_pattern is an editor (not a converter), so copy first then transform in place.
+            - set(datapoint.attributes["k8s.pod.uid"], datapoint.attributes["id"]) where IsMatch(datapoint.attributes["id"], "^/kubepods/(?:[^/]+/)?pod[a-f0-9-]{36}/")
+            - replace_pattern(datapoint.attributes["k8s.pod.uid"], "^/kubepods/(?:[^/]+/)?pod([a-f0-9-]{36})/.*$", "$$1") where IsMatch(datapoint.attributes["id"], "^/kubepods/(?:[^/]+/)?pod[a-f0-9-]{36}/")
+            - set(datapoint.attributes["k8s.container.id"], datapoint.attributes["id"]) where IsMatch(datapoint.attributes["id"], "^/kubepods/(?:[^/]+/)?pod[a-f0-9-]{36}/.+")
+            - replace_pattern(datapoint.attributes["k8s.container.id"], "^/kubepods/(?:[^/]+/)?pod[a-f0-9-]{36}/(.+)$", "$$1") where IsMatch(datapoint.attributes["id"], "^/kubepods/(?:[^/]+/)?pod[a-f0-9-]{36}/.+")
+
+            # Promote to resource attributes so k8s_attributes processor can look up deployment/owner metadata
+            - set(resource.attributes["k8s.pod.uid"], datapoint.attributes["k8s.pod.uid"]) where datapoint.attributes["k8s.pod.uid"] != nil
+            - set(resource.attributes["k8s.namespace.name"], datapoint.attributes["k8s.namespace.name"]) where datapoint.attributes["k8s.namespace.name"] != nil
+            - set(resource.attributes["k8s.node.name"], datapoint.attributes["k8s.node.name"]) where datapoint.attributes["k8s.node.name"] != nil
+
+            # Drop raw cAdvisor datapoint attributes now that OTel standard ones are set
+            - delete_key(datapoint.attributes, "namespace")
+            - delete_key(datapoint.attributes, "pod")
+            - delete_key(datapoint.attributes, "container")
+            - delete_key(datapoint.attributes, "kubernetes_io_hostname")
+            - delete_key(datapoint.attributes, "image")
+            - delete_key(datapoint.attributes, "name")
+            # Drop Prometheus scrape meta-labels (datapoint level)
+            - delete_key(datapoint.attributes, "instance")
+            - delete_key(datapoint.attributes, "job")
+            # Drop node topology labels injected by labelmap relabeling (datapoint level)
+            # labelmap promotes __meta_kubernetes_node_label_* to scrape-target labels, which
+            # the OTel prometheus receiver ingests as datapoint attrs — resource cleanup is insufficient.
+            - delete_key(datapoint.attributes, "beta_kubernetes_io_arch")
+            - delete_key(datapoint.attributes, "beta_kubernetes_io_os")
+            - delete_key(datapoint.attributes, "kubernetes_io_arch")
+            - delete_key(datapoint.attributes, "kubernetes_io_os")
+            - delete_key(datapoint.attributes, "eks_amazonaws_com_compute_type")
+            - delete_key(datapoint.attributes, "failure_domain_beta_kubernetes_io_region")
+            - delete_key(datapoint.attributes, "topology_kubernetes_io_region")
+            - delete_key(datapoint.attributes, "failure_domain_beta_kubernetes_io_zone")
+            - delete_key(datapoint.attributes, "topology_kubernetes_io_zone")
+            - delete_key(datapoint.attributes, "topology_k8s_aws_zone_id")
+
+        # labelmap relabeling promotes node labels to TARGET labels → OTel resource attributes.
+        # delete_key(datapoint.attributes, ...) does NOT touch these — use context: resource.
+        - context: resource
+          statements:
+            # Drop node labels injected by labelmap relabeling (resource attribute level)
+            - delete_key(resource.attributes, "kubernetes_io_hostname")
+            - delete_key(resource.attributes, "kubernetes_io_arch")
+            - delete_key(resource.attributes, "kubernetes_io_os")
+            - delete_key(resource.attributes, "beta_kubernetes_io_arch")
+            - delete_key(resource.attributes, "beta_kubernetes_io_os")
+            - delete_key(resource.attributes, "failure_domain_beta_kubernetes_io_zone")
+            - delete_key(resource.attributes, "failure_domain_beta_kubernetes_io_region")
+            - delete_key(resource.attributes, "topology_kubernetes_io_zone")
+            - delete_key(resource.attributes, "topology_kubernetes_io_region")
+            - delete_key(resource.attributes, "topology_k8s_aws_zone_id")
+            - delete_key(resource.attributes, "eks_amazonaws_com_compute_type")
+            # Drop raw Prometheus scrape target labels (resource attribute level)
+            # Note: the receiver maps job→service.name and instance→service.instance.id,
+            # but also retains the originals as resource attributes.
+            - delete_key(resource.attributes, "instance")
+            - delete_key(resource.attributes, "job")
+
+    transform/hpa_metrics:
+      metric_statements:
+        - context: datapoint
+          statements:
+            - set(datapoint.attributes["k8s.hpa.scaletargetref.name"], resource.attributes["k8s.hpa.scaletargetref.name"])
+            - set(datapoint.attributes["k8s.hpa.scaletargetref.kind"], resource.attributes["k8s.hpa.scaletargetref.kind"])
+
+    filter/cadvisor:
+      error_mode: ignore
+      metrics:
+        # Drop cadvisor metrics NOT in the keep list.
+        # k8s_cluster metrics have a different service.name so they pass through untouched.
+        metric:
+          - >-
+            resource.attributes["service.name"] == "kubelet-cadvisor" and
+            not (name == "k8s.container.cpu.time" or
+            name == "k8s.container.cpu.periods" or
+            name == "k8s.container.cpu.throttled_time" or
+            name == "k8s.container.cpu.throttled_periods" or
+            name == "k8s.container.memory.working_set" or
+            name == "k8s.container.memory.usage" or
+            name == "k8s.container.memory.page_faults" or
+            name == "k8s.container.fs.usage" or
+            name == "k8s.container.fs.read" or
+            name == "k8s.container.fs.write" or
+            name == "k8s.container.network.receive" or
+            name == "k8s.container.network.transmit" or
+            name == "k8s.container.network.receive.errors" or
+            name == "k8s.container.network.transmit.errors")
+        # Keep ONLY container-level cgroup datapoints — id is the source of truth.
+        # Drop everything that is not a full container path: /, /kubepods, /kubepods/burstable,
+        # /kubepods/pod<uid> (pod-level), /kubepods/burstable/pod<uid> (pod-level), etc.
+        # Container-level path always has pod<uid>/<container-id> as the final two segments.
+        # All QoS classes covered:
+        #   Guaranteed:  /kubepods/pod<uid>/<container-id>
+        #   Burstable:   /kubepods/burstable/pod<uid>/<container-id>
+        #   BestEffort:  /kubepods/besteffort/pod<uid>/<container-id>
+        datapoint:
+          - >-
+            resource.attributes["service.name"] == "kubelet-cadvisor" and
+            not IsMatch(attributes["id"], "^/kubepods/(?:[^/]+/)?pod[a-f0-9-]{36}/.+")
+
+    # HTTP metrics — Production 1min.ai Metrics dashboard
+    filter/http_metrics_allowlist:
+      metrics:
+        include:
+          match_type: strict
+          metric_names:
+            - http.server.duration # Histogram (ms)  → Prom: http_server_duration_milliseconds_{bucket,count,sum}
+
+    # NodeJS runtime metrics — Production 1min.ai Metrics dashboard
+    filter/node_runtime_metrics_allowlist:
+      metrics:
+        include:
+          match_type: strict
+          metric_names:
+            # NodeJS Runtime (@opentelemetry/instrumentation-runtime-node)
+            - nodejs.eventloop.time # Counter   (s)   → Prom: nodejs_eventloop_time_seconds_total
+            - nodejs.eventloop.delay.mean # Gauge     (s)   → Prom: nodejs_eventloop_delay_mean_seconds
+            - v8js.memory.heap.used # Gauge     (By)  → Prom: v8js_memory_heap_used_bytes
+            - v8js.memory.heap.limit # Gauge     (By)  → Prom: v8js_memory_heap_limit_bytes
+            - v8js.gc.duration # Histogram (s)   → Prom: v8js_gc_duration_seconds_{bucket,sum,count}
+
+    # Bussiness metrics — Production 1min.ai Metrics dashboard
+    filter/business_metrics_allowlist:
+      metrics:
+        include:
+          match_type: strict
+          metric_names:
+            # Business metrics
+            - business-transactions.ai_feature_run.count
+            - business-transactions.user_registration.count # Counter → Prom: business_transactions_user_registration_count_total
+            - business-transactions.ai_record.count # Counter (status label) → Prom: business_transactions_ai_record_count_total
+            - business-transactions.credit_consumed.total # Counter → Prom: business_transactions_credit_consumed_total
+
+    # k8s_cluster receiver — Kubernetes Observability dashboards
+    filter/kubernetes_metrics_allowlist:
+      metrics:
+        include:
+          match_type: strict
+          metric_names:
+            - k8s.namespace.phase
+            - k8s.deployment.desired
+            - k8s.deployment.available
+            - k8s.cronjob.active_jobs
+            - k8s.pod.phase
+            - k8s.container.cpu_limit
+            - k8s.container.memory_limit
+            - k8s.container.restarts
+            - k8s.container.ready
+            - k8s.hpa.min_replicas
+            - k8s.hpa.max_replicas
+            - k8s.hpa.current_replicas
+            - k8s.hpa.desired_replicas
+
+    # cadvisor (post transform/cadvisor rename) — Kubernetes Observability dashboards
+    filter/cadvisor_metrics_allowlist:
+      metrics:
+        include:
+          match_type: strict
+          metric_names:
+            - k8s.container.cpu.time
+            - k8s.container.cpu.periods
+            - k8s.container.cpu.throttled_time
+            - k8s.container.cpu.throttled_periods
+            - k8s.container.memory.working_set
+            - k8s.container.memory.usage
+            - k8s.container.memory.page_faults
+            - k8s.container.fs.usage
+            - k8s.container.fs.read
+            - k8s.container.fs.write
+            - k8s.container.network.receive
+            - k8s.container.network.transmit
+            - k8s.container.network.receive.errors
+            - k8s.container.network.transmit.errors
+
+    # Envoy Gateway (OTLP) — Envoy Gateway dashboards
+    # Ref: https://www.envoyproxy.io/docs/envoy/latest/configuration/http/http_conn_man/stats
+    #      https://www.envoyproxy.io/docs/envoy/latest/configuration/upstream/cluster_manager/cluster_stats
+    #
+    # OTel names follow Envoy's stat path: variable segment (<stat_prefix>, <name>, <priority>)
+    # is extracted as a label; the rest becomes the metric name with dots as scope separators.
+    # Grafana Cloud converts dots→underscores and appends _total to counters that lack it.
+    # Histograms: list base name only; _bucket/_sum/_count are added by Grafana Cloud.
+    filter/envoy_metrics_allowlist:
+      metrics:
+        include:
+          match_type: strict
+          metric_names:
+            # HTTP connection manager: http.<stat_prefix>.* → OTel: http.*
+            - http.downstream_rq_total # Counter (name already has _total) → Prom: http_downstream_rq_total
+            - http.downstream_rq_xx # Counter (Grafana adds _total)      → Prom: http_downstream_rq_xx_total
+            - http.downstream_rq_time # Histogram                          → Prom: http_downstream_rq_time_{bucket,sum,count}
+            - http.downstream_rq_rx_reset # Counter (Grafana adds _total)      → Prom: http_downstream_rq_rx_reset_total
+            - http.downstream_rq_tx_reset # Counter (Grafana adds _total)      → Prom: http_downstream_rq_tx_reset_total
+            - http.downstream_rq_idle_timeout # Counter (Grafana adds _total)      → Prom: http_downstream_rq_idle_timeout_total
+            - http.downstream_cx_active # Gauge                              → Prom: http_downstream_cx_active
+            - http.downstream_cx_destroy # Counter (Grafana adds _total)      → Prom: http_downstream_cx_destroy_total
+            - http.downstream_cx_idle_timeout # Counter (Grafana adds _total)      → Prom: http_downstream_cx_idle_timeout_total
+            - http.downstream_cx_rx_bytes_total # Counter (name already has _total) → Prom: http_downstream_cx_rx_bytes_total
+            - http.downstream_cx_tx_bytes_total # Counter (name already has _total) → Prom: http_downstream_cx_tx_bytes_total
+            # Cluster: cluster.<name>.* → OTel: cluster.*
+            - cluster.upstream_rq_total # Counter (name already has _total) → Prom: cluster_upstream_rq_total
+            - cluster.upstream_rq_xx # Counter (Grafana adds _total)      → Prom: cluster_upstream_rq_xx_total
+            - cluster.upstream_rq_time # Histogram                          → Prom: cluster_upstream_rq_time_{bucket,sum,count}
+            - cluster.upstream_rq_active # Gauge                              → Prom: cluster_upstream_rq_active
+            - cluster.upstream_rq_pending_active # Gauge                              → Prom: cluster_upstream_rq_pending_active
+            - cluster.upstream_rq_pending_total # Counter (name already has _total)  → Prom: cluster_upstream_rq_pending_total
+            - cluster.upstream_rq_pending_overflow # Counter (Grafana adds _total)     → Prom: cluster_upstream_rq_pending_overflow_total
+            - cluster.upstream_rq_tx_reset # Counter (Grafana adds _total)      → Prom: cluster_upstream_rq_tx_reset_total
+            - cluster.upstream_rq_timeout # Counter (Grafana adds _total)      → Prom: cluster_upstream_rq_timeout_total
+            - cluster.upstream_cx_active # Gauge                              → Prom: cluster_upstream_cx_active
+            - cluster.upstream_cx_destroy # Counter (Grafana adds _total)      → Prom: cluster_upstream_cx_destroy_total
+            - cluster.upstream_cx_connect_fail # Counter (Grafana adds _total)      → Prom: cluster_upstream_cx_connect_fail_total
+            - cluster.upstream_cx_overflow # Counter (Grafana adds _total)      → Prom: cluster_upstream_cx_overflow_total
+            - cluster.membership_healthy # Gauge                              → Prom: cluster_membership_healthy
+            - cluster.membership_total # Gauge                              → Prom: cluster_membership_total
+            # Circuit breakers: cluster.<name>.circuit_breakers.<priority>.* → OTel: cluster.circuit_breakers.*
+            - cluster.circuit_breakers.cx_open # Gauge → Prom: cluster_circuit_breakers_cx_open
+            - cluster.circuit_breakers.cx_pool_open # Gauge → Prom: cluster_circuit_breakers_cx_pool_open
+            - cluster.circuit_breakers.rq_open # Gauge → Prom: cluster_circuit_breakers_rq_open
+
+  exporters:
+    otlp_http/grafana_cloud:
+      endpoint: "https://otlp-gateway-prod-us-east-2.grafana.net/otlp"
+      auth:
+        authenticator: basicauth/grafana_cloud
+
+    otlp_http/grafana_cloud_backup:
+      endpoint: "https://otlp-gateway-prod-ap-southeast-1.grafana.net/otlp"
+      auth:
+        authenticator: basicauth/grafana_cloud_backup
+
+    debug:
+      verbosity: detailed
+
+    nop:
+
+  service:
+    # Ship the collector's own internal logs to Grafana Cloud.
+    # Ref: https://opentelemetry.io/docs/collector/internal-telemetry/
+    telemetry:
+      resource:
+        service.name: otel-collector
+        k8s.cluster.name: prod-eks
+      logs:
+        level: info
+        encoding: json
+        processors:
+          - batch:
+              exporter:
+                otlp:
+                  protocol: http/protobuf
+                  # SDK uses this URL as-is; unlike the collector's otlphttp exporter,
+                  # it does NOT auto-append /v1/logs.
+                  endpoint: https://otlp-gateway-prod-us-east-2.grafana.net/otlp/v1/logs
+                  headers:
+                    authorization: "Basic ${env:GRAFANA_CLOUD_BASIC_AUTH}"
+
+    extensions: [health_check, basicauth/grafana_cloud, basicauth/grafana_cloud_backup]
+    pipelines:
+      traces:
+        receivers: [otlp]
+        processors: [memory_limiter, k8s_attributes, tail_sampling, batch]
+        exporters: [otlp_http/grafana_cloud]
+
+      metrics:
+        exporters: [nop]
+        processors: [memory_limiter, batch]
+        receivers: [nop]
+
+      metrics/http:
+        receivers: [otlp]
+        processors: [memory_limiter, filter/http_metrics_allowlist, resource/add_cluster, k8s_attributes, batch]
+        exporters: [otlp_http/grafana_cloud_backup]
+
+      metrics/business:
+        receivers: [otlp]
+        processors: [memory_limiter, filter/business_metrics_allowlist, resource/add_cluster, k8s_attributes, batch]
+        exporters: [otlp_http/grafana_cloud]
+
+      metrics/nodejs_runtime:
+        receivers: [otlp]
+        processors: [memory_limiter, filter/node_runtime_metrics_allowlist, resource/add_cluster, k8s_attributes, batch]
+        exporters: [otlp_http/grafana_cloud]
+
+      metrics/kubernetes:
+        receivers: [k8s_cluster]
+        processors: [memory_limiter, transform/hpa_metrics, filter/kubernetes_metrics_allowlist, resource/add_cluster, k8s_attributes, batch]
+        exporters: [otlp_http/grafana_cloud]
+
+      metrics/cadvisor:
+        receivers: [prometheus]
+        processors:
+          [memory_limiter, transform/cadvisor, filter/cadvisor, filter/cadvisor_metrics_allowlist, resource/add_cluster, k8s_attributes, batch]
+        exporters: [otlp_http/grafana_cloud]
+
+      metrics/envoy:
+        receivers: [otlp]
+        processors: [memory_limiter, filter/envoy_metrics_allowlist, resource/add_cluster, k8s_attributes, batch]
+        exporters: [otlp_http/grafana_cloud]
+
+      metrics/database:
+        receivers: [mysql]
+        processors: [memory_limiter, resource/add_cluster, k8s_attributes, batch]
+        exporters: [otlp_http/grafana_cloud]
+
+      logs:
+        receivers: [otlp]
+        processors: [memory_limiter, k8s_attributes, batch]
+        exporters: [otlp_http/grafana_cloud]

@@ -1,0 +1,527 @@
+# DO NOT EDIT — generated reference, not applied to the cluster.
+#
+# Fully-rendered OpenTelemetry Collector config as the binary actually sees it:
+# the values from helm/values.yaml merged with the Helm chart's defaults
+# (health_check / memory_limiter, preset-injected receivers, env-var wiring, etc.).
+# Edit helm/values.yaml — this file is a read-only snapshot for reference/diffing.
+#
+# Chart:   open-telemetry/opentelemetry-collector 0.147.1 (appVersion 0.150.1)
+# Source:  helm/values.yaml
+#
+# Regenerate:
+#   helm template otel-collector open-telemetry/opentelemetry-collector \
+#     --namespace observability --version 0.147.1 \
+#     -f helm/values.yaml \
+#     | yq '.data.relay | select(. != null)' -r
+
+exporters:
+  debug:
+    verbosity: detailed
+  nop: null
+  otlp_http/grafana_cloud:
+    auth:
+      authenticator: basicauth/grafana_cloud
+    endpoint: https://otlp-gateway-prod-us-east-2.grafana.net/otlp
+  otlp_http/grafana_cloud_backup:
+    auth:
+      authenticator: basicauth/grafana_cloud_backup
+    endpoint: https://otlp-gateway-prod-ap-southeast-1.grafana.net/otlp
+extensions:
+  basicauth/grafana_cloud:
+    client_auth:
+      password: ${env:GRAFANA_CLOUD_PASSWORD}
+      username: ${env:GRAFANA_CLOUD_USERNAME}
+  basicauth/grafana_cloud_backup:
+    client_auth:
+      password: ${env:GRAFANA_CLOUD_BACKUP_PASSWORD}
+      username: ${env:GRAFANA_CLOUD_BACKUP_USERNAME}
+  health_check:
+    endpoint: ${env:MY_POD_IP}:13133
+processors:
+  batch:
+    send_batch_max_size: 1000
+    send_batch_size: 500
+    timeout: 5s
+  filter/business_metrics_allowlist:
+    metrics:
+      include:
+        match_type: strict
+        metric_names:
+        - business-transactions.ai_feature_run.count
+        - business-transactions.user_registration.count
+        - business-transactions.ai_record.count
+        - business-transactions.credit_consumed.total
+  filter/cadvisor:
+    error_mode: ignore
+    metrics:
+      datapoint:
+      - resource.attributes["service.name"] == "kubelet-cadvisor" and not IsMatch(attributes["id"],
+        "^/kubepods/(?:[^/]+/)?pod[a-f0-9-]{36}/.+")
+      metric:
+      - resource.attributes["service.name"] == "kubelet-cadvisor" and not (name ==
+        "k8s.container.cpu.time" or name == "k8s.container.cpu.periods" or name ==
+        "k8s.container.cpu.throttled_time" or name == "k8s.container.cpu.throttled_periods"
+        or name == "k8s.container.memory.working_set" or name == "k8s.container.memory.usage"
+        or name == "k8s.container.memory.page_faults" or name == "k8s.container.fs.usage"
+        or name == "k8s.container.fs.read" or name == "k8s.container.fs.write" or
+        name == "k8s.container.network.receive" or name == "k8s.container.network.transmit"
+        or name == "k8s.container.network.receive.errors" or name == "k8s.container.network.transmit.errors")
+  filter/cadvisor_metrics_allowlist:
+    metrics:
+      include:
+        match_type: strict
+        metric_names:
+        - k8s.container.cpu.time
+        - k8s.container.cpu.periods
+        - k8s.container.cpu.throttled_time
+        - k8s.container.cpu.throttled_periods
+        - k8s.container.memory.working_set
+        - k8s.container.memory.usage
+        - k8s.container.memory.page_faults
+        - k8s.container.fs.usage
+        - k8s.container.fs.read
+        - k8s.container.fs.write
+        - k8s.container.network.receive
+        - k8s.container.network.transmit
+        - k8s.container.network.receive.errors
+        - k8s.container.network.transmit.errors
+  filter/envoy_metrics_allowlist:
+    metrics:
+      include:
+        match_type: strict
+        metric_names:
+        - http.downstream_rq_total
+        - http.downstream_rq_xx
+        - http.downstream_rq_time
+        - http.downstream_rq_rx_reset
+        - http.downstream_rq_tx_reset
+        - http.downstream_rq_idle_timeout
+        - http.downstream_cx_active
+        - http.downstream_cx_destroy
+        - http.downstream_cx_idle_timeout
+        - http.downstream_cx_rx_bytes_total
+        - http.downstream_cx_tx_bytes_total
+        - cluster.upstream_rq_total
+        - cluster.upstream_rq_xx
+        - cluster.upstream_rq_time
+        - cluster.upstream_rq_active
+        - cluster.upstream_rq_pending_active
+        - cluster.upstream_rq_pending_total
+        - cluster.upstream_rq_pending_overflow
+        - cluster.upstream_rq_tx_reset
+        - cluster.upstream_rq_timeout
+        - cluster.upstream_cx_active
+        - cluster.upstream_cx_destroy
+        - cluster.upstream_cx_connect_fail
+        - cluster.upstream_cx_overflow
+        - cluster.membership_healthy
+        - cluster.membership_total
+        - cluster.circuit_breakers.cx_open
+        - cluster.circuit_breakers.cx_pool_open
+        - cluster.circuit_breakers.rq_open
+  filter/http_metrics_allowlist:
+    metrics:
+      include:
+        match_type: strict
+        metric_names:
+        - http.server.duration
+  filter/kubernetes_metrics_allowlist:
+    metrics:
+      include:
+        match_type: strict
+        metric_names:
+        - k8s.namespace.phase
+        - k8s.deployment.desired
+        - k8s.deployment.available
+        - k8s.cronjob.active_jobs
+        - k8s.pod.phase
+        - k8s.container.cpu_limit
+        - k8s.container.memory_limit
+        - k8s.container.restarts
+        - k8s.container.ready
+        - k8s.hpa.min_replicas
+        - k8s.hpa.max_replicas
+        - k8s.hpa.current_replicas
+        - k8s.hpa.desired_replicas
+  filter/node_runtime_metrics_allowlist:
+    metrics:
+      include:
+        match_type: strict
+        metric_names:
+        - nodejs.eventloop.time
+        - nodejs.eventloop.delay.mean
+        - v8js.memory.heap.used
+        - v8js.memory.heap.limit
+        - v8js.gc.duration
+  k8s_attributes:
+    extract:
+      metadata:
+      - k8s.namespace.name
+      - k8s.pod.name
+      - k8s.pod.uid
+      - k8s.node.name
+      - k8s.pod.start_time
+      - k8s.deployment.name
+      - k8s.replicaset.name
+      - k8s.replicaset.uid
+      - k8s.daemonset.name
+      - k8s.daemonset.uid
+      - k8s.job.name
+      - k8s.job.uid
+      - k8s.container.name
+      - k8s.cronjob.name
+      - k8s.statefulset.name
+      - k8s.statefulset.uid
+      - container.image.tag
+      - container.image.name
+      - service.namespace
+      - service.name
+      - service.version
+      otel_annotations: true
+    passthrough: false
+    pod_association:
+    - sources:
+      - from: resource_attribute
+        name: k8s.pod.ip
+    - sources:
+      - from: resource_attribute
+        name: k8s.pod.uid
+    - sources:
+      - from: connection
+  memory_limiter:
+    check_interval: 5s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+  resource/add_cluster:
+    attributes:
+    - action: upsert
+      key: k8s.cluster.name
+      value: prod-eks
+  tail_sampling:
+    decision_wait: 30s
+    policies:
+    - name: errors
+      status_code:
+        status_codes:
+        - ERROR
+      type: status_code
+    - latency:
+        threshold_ms: 1000
+      name: slow_traces
+      type: latency
+    - name: baseline
+      probabilistic:
+        sampling_percentage: 25
+      type: probabilistic
+  transform/cadvisor:
+    error_mode: ignore
+    metric_statements:
+    - context: metric
+      statements:
+      - set(metric.name, "k8s.container.cpu.time") where metric.name == "container_cpu_usage_seconds_total"
+      - set(metric.name, "k8s.container.cpu.periods") where metric.name == "container_cpu_cfs_periods_total"
+      - set(metric.name, "k8s.container.cpu.throttled_time") where metric.name ==
+        "container_cpu_cfs_throttled_seconds_total"
+      - set(metric.name, "k8s.container.cpu.throttled_periods") where metric.name
+        == "container_cpu_cfs_throttled_periods_total"
+      - set(metric.name, "k8s.container.memory.usage") where metric.name == "container_memory_usage_bytes"
+      - set(metric.name, "k8s.container.memory.working_set") where metric.name ==
+        "container_memory_working_set_bytes"
+      - set(metric.name, "k8s.container.memory.page_faults") where metric.name ==
+        "container_memory_failures_total"
+      - set(metric.name, "k8s.container.fs.usage") where metric.name == "container_fs_usage_bytes"
+      - set(metric.name, "k8s.container.fs.read") where metric.name == "container_fs_reads_bytes_total"
+      - set(metric.name, "k8s.container.fs.write") where metric.name == "container_fs_writes_bytes_total"
+      - set(metric.name, "k8s.container.network.receive") where metric.name == "container_network_receive_bytes_total"
+      - set(metric.name, "k8s.container.network.transmit") where metric.name == "container_network_transmit_bytes_total"
+      - set(metric.name, "k8s.container.network.receive.errors") where metric.name
+        == "container_network_receive_errors_total"
+      - set(metric.name, "k8s.container.network.transmit.errors") where metric.name
+        == "container_network_transmit_errors_total"
+    - context: datapoint
+      statements:
+      - set(datapoint.attributes["k8s.namespace.name"], datapoint.attributes["namespace"])
+        where datapoint.attributes["namespace"] != nil
+      - set(datapoint.attributes["k8s.node.name"], datapoint.attributes["kubernetes_io_hostname"])
+        where datapoint.attributes["kubernetes_io_hostname"] != nil
+      - set(datapoint.attributes["k8s.pod.uid"], datapoint.attributes["id"]) where
+        IsMatch(datapoint.attributes["id"], "^/kubepods/(?:[^/]+/)?pod[a-f0-9-]{36}/")
+      - replace_pattern(datapoint.attributes["k8s.pod.uid"], "^/kubepods/(?:[^/]+/)?pod([a-f0-9-]{36})/.*$",
+        "$$1") where IsMatch(datapoint.attributes["id"], "^/kubepods/(?:[^/]+/)?pod[a-f0-9-]{36}/")
+      - set(datapoint.attributes["k8s.container.id"], datapoint.attributes["id"])
+        where IsMatch(datapoint.attributes["id"], "^/kubepods/(?:[^/]+/)?pod[a-f0-9-]{36}/.+")
+      - replace_pattern(datapoint.attributes["k8s.container.id"], "^/kubepods/(?:[^/]+/)?pod[a-f0-9-]{36}/(.+)$",
+        "$$1") where IsMatch(datapoint.attributes["id"], "^/kubepods/(?:[^/]+/)?pod[a-f0-9-]{36}/.+")
+      - set(resource.attributes["k8s.pod.uid"], datapoint.attributes["k8s.pod.uid"])
+        where datapoint.attributes["k8s.pod.uid"] != nil
+      - set(resource.attributes["k8s.namespace.name"], datapoint.attributes["k8s.namespace.name"])
+        where datapoint.attributes["k8s.namespace.name"] != nil
+      - set(resource.attributes["k8s.node.name"], datapoint.attributes["k8s.node.name"])
+        where datapoint.attributes["k8s.node.name"] != nil
+      - delete_key(datapoint.attributes, "namespace")
+      - delete_key(datapoint.attributes, "pod")
+      - delete_key(datapoint.attributes, "container")
+      - delete_key(datapoint.attributes, "kubernetes_io_hostname")
+      - delete_key(datapoint.attributes, "image")
+      - delete_key(datapoint.attributes, "name")
+      - delete_key(datapoint.attributes, "instance")
+      - delete_key(datapoint.attributes, "job")
+      - delete_key(datapoint.attributes, "beta_kubernetes_io_arch")
+      - delete_key(datapoint.attributes, "beta_kubernetes_io_os")
+      - delete_key(datapoint.attributes, "kubernetes_io_arch")
+      - delete_key(datapoint.attributes, "kubernetes_io_os")
+      - delete_key(datapoint.attributes, "eks_amazonaws_com_compute_type")
+      - delete_key(datapoint.attributes, "failure_domain_beta_kubernetes_io_region")
+      - delete_key(datapoint.attributes, "topology_kubernetes_io_region")
+      - delete_key(datapoint.attributes, "failure_domain_beta_kubernetes_io_zone")
+      - delete_key(datapoint.attributes, "topology_kubernetes_io_zone")
+      - delete_key(datapoint.attributes, "topology_k8s_aws_zone_id")
+    - context: resource
+      statements:
+      - delete_key(resource.attributes, "kubernetes_io_hostname")
+      - delete_key(resource.attributes, "kubernetes_io_arch")
+      - delete_key(resource.attributes, "kubernetes_io_os")
+      - delete_key(resource.attributes, "beta_kubernetes_io_arch")
+      - delete_key(resource.attributes, "beta_kubernetes_io_os")
+      - delete_key(resource.attributes, "failure_domain_beta_kubernetes_io_zone")
+      - delete_key(resource.attributes, "failure_domain_beta_kubernetes_io_region")
+      - delete_key(resource.attributes, "topology_kubernetes_io_zone")
+      - delete_key(resource.attributes, "topology_kubernetes_io_region")
+      - delete_key(resource.attributes, "topology_k8s_aws_zone_id")
+      - delete_key(resource.attributes, "eks_amazonaws_com_compute_type")
+      - delete_key(resource.attributes, "instance")
+      - delete_key(resource.attributes, "job")
+  transform/hpa_metrics:
+    metric_statements:
+    - context: datapoint
+      statements:
+      - set(datapoint.attributes["k8s.hpa.scaletargetref.name"], resource.attributes["k8s.hpa.scaletargetref.name"])
+      - set(datapoint.attributes["k8s.hpa.scaletargetref.kind"], resource.attributes["k8s.hpa.scaletargetref.kind"])
+receivers:
+  jaeger:
+    protocols:
+      grpc:
+        endpoint: ${env:MY_POD_IP}:14250
+      thrift_compact:
+        endpoint: ${env:MY_POD_IP}:6831
+      thrift_http:
+        endpoint: ${env:MY_POD_IP}:14268
+  k8s_cluster:
+    collection_interval: 60s
+    metadata_collection_interval: 5m
+    resource_attributes:
+      k8s.hpa.scaletargetref.kind:
+        enabled: true
+      k8s.hpa.scaletargetref.name:
+        enabled: true
+  k8sobjects:
+    objects:
+    - exclude_watch_type:
+      - DELETED
+      group: events.k8s.io
+      mode: watch
+      name: events
+  mysql:
+    collection_interval: 60s
+    database: ${env:MYSQL_DATABASE}
+    endpoint: ${env:MYSQL_ENDPOINT}
+    initial_delay: 1s
+    metrics:
+      mysql.client.network.io:
+        enabled: true
+      mysql.commands:
+        enabled: true
+      mysql.connection.count:
+        enabled: true
+      mysql.connection.errors:
+        enabled: true
+      mysql.max_used_connections:
+        enabled: true
+      mysql.query.client.count:
+        enabled: true
+      mysql.query.count:
+        enabled: true
+      mysql.query.slow.count:
+        enabled: true
+    password: ${env:MYSQL_PASSWORD}
+    statement_events:
+      digest_text_limit: 120
+      limit: 250
+      time_limit: 24h
+    username: ${env:MYSQL_USERNAME}
+  nop: null
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        cors:
+          allowed_origins:
+          - https://app.1min.ai
+        endpoint: 0.0.0.0:4318
+  prometheus:
+    config:
+      scrape_configs:
+      - bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        job_name: kubelet-cadvisor
+        kubernetes_sd_configs:
+        - role: node
+        relabel_configs:
+        - action: labelmap
+          regex: __meta_kubernetes_node_label_(.+)
+        - replacement: kubernetes.default.svc:443
+          target_label: __address__
+        - regex: (.+)
+          replacement: /api/v1/nodes/$${1}/proxy/metrics/cadvisor
+          source_labels:
+          - __meta_kubernetes_node_name
+          target_label: __metrics_path__
+        scheme: https
+        scrape_interval: 60s
+        scrape_timeout: 30s
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+  zipkin:
+    endpoint: ${env:MY_POD_IP}:9411
+service:
+  extensions:
+  - health_check
+  - basicauth/grafana_cloud
+  - basicauth/grafana_cloud_backup
+  pipelines:
+    logs:
+      exporters:
+      - otlp_http/grafana_cloud
+      processors:
+      - memory_limiter
+      - k8s_attributes
+      - batch
+      receivers:
+      - otlp
+      - k8sobjects
+    metrics:
+      exporters:
+      - nop
+      processors:
+      - memory_limiter
+      - batch
+      receivers:
+      - nop
+      - k8s_cluster
+    metrics/business:
+      exporters:
+      - otlp_http/grafana_cloud
+      processors:
+      - memory_limiter
+      - filter/business_metrics_allowlist
+      - resource/add_cluster
+      - k8s_attributes
+      - batch
+      receivers:
+      - otlp
+    metrics/cadvisor:
+      exporters:
+      - otlp_http/grafana_cloud
+      processors:
+      - memory_limiter
+      - transform/cadvisor
+      - filter/cadvisor
+      - filter/cadvisor_metrics_allowlist
+      - resource/add_cluster
+      - k8s_attributes
+      - batch
+      receivers:
+      - prometheus
+    metrics/database:
+      exporters:
+      - otlp_http/grafana_cloud
+      processors:
+      - memory_limiter
+      - resource/add_cluster
+      - k8s_attributes
+      - batch
+      receivers:
+      - mysql
+    metrics/envoy:
+      exporters:
+      - otlp_http/grafana_cloud
+      processors:
+      - memory_limiter
+      - filter/envoy_metrics_allowlist
+      - resource/add_cluster
+      - k8s_attributes
+      - batch
+      receivers:
+      - otlp
+    metrics/http:
+      exporters:
+      - otlp_http/grafana_cloud_backup
+      processors:
+      - memory_limiter
+      - filter/http_metrics_allowlist
+      - resource/add_cluster
+      - k8s_attributes
+      - batch
+      receivers:
+      - otlp
+    metrics/kubernetes:
+      exporters:
+      - otlp_http/grafana_cloud
+      processors:
+      - memory_limiter
+      - transform/hpa_metrics
+      - filter/kubernetes_metrics_allowlist
+      - resource/add_cluster
+      - k8s_attributes
+      - batch
+      receivers:
+      - k8s_cluster
+    metrics/nodejs_runtime:
+      exporters:
+      - otlp_http/grafana_cloud
+      processors:
+      - memory_limiter
+      - filter/node_runtime_metrics_allowlist
+      - resource/add_cluster
+      - k8s_attributes
+      - batch
+      receivers:
+      - otlp
+    traces:
+      exporters:
+      - otlp_http/grafana_cloud
+      processors:
+      - memory_limiter
+      - k8s_attributes
+      - tail_sampling
+      - batch
+      receivers:
+      - otlp
+  telemetry:
+    logs:
+      encoding: json
+      level: info
+      processors:
+      - batch:
+          exporter:
+            otlp:
+              endpoint: https://otlp-gateway-prod-us-east-2.grafana.net/otlp/v1/logs
+              headers:
+                authorization: Basic ${env:GRAFANA_CLOUD_BASIC_AUTH}
+              protocol: http/protobuf
+    metrics:
+      readers:
+      - pull:
+          exporter:
+            prometheus:
+              host: ${env:MY_POD_IP}
+              port: 8888
+    resource:
+      host.name: ${env:OTEL_K8S_NODE_NAME}
+      k8s.cluster.name: prod-eks
+      k8s.namespace.name: ${env:OTEL_K8S_NAMESPACE}
+      k8s.node.ip: ${env:OTEL_K8S_NODE_IP}
+      k8s.node.name: ${env:OTEL_K8S_NODE_NAME}
+      k8s.pod.ip: ${env:OTEL_K8S_POD_IP}
+      k8s.pod.name: ${env:OTEL_K8S_POD_NAME}
+      service.name: otel-collector
