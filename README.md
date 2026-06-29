@@ -1,0 +1,1 @@
+# opentelemetry-collector-config-for-eks-fargate
